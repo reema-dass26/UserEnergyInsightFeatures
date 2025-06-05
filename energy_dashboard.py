@@ -413,152 +413,220 @@ with tab8:
     col2.metric("📈 Highest Day", f"{highest_day['consumption_kwh']:.2f} kWh", str(highest_day['date']))
     col3.metric("📊 Average Daily Use", f"{average_day:.2f} kWh")
 
-    # --- Pie Chart Summary of Consumption Categories ---
-    pie_data = pd.DataFrame({
-        'Label': ['Lowest Day', 'Highest Day', 'Average (Rest)'],
+    # --- Bar Chart for Milestones ---
+    milestone_data = pd.DataFrame({
+        'Day': ['Lowest', 'Highest', 'Average'],
         'kWh': [
             lowest_day['consumption_kwh'],
             highest_day['consumption_kwh'],
-            daily_kwh[~daily_kwh['date'].isin([lowest_day['date'], highest_day['date']])]['consumption_kwh'].mean()
+            average_day
         ]
     })
 
-    # Altair Pie Chart
-    pie_chart = alt.Chart(pie_data).mark_arc(innerRadius=50).encode(
-        theta=alt.Theta(field="kWh", type="quantitative"),
-        color=alt.Color(field="Label", type="nominal", scale=alt.Scale(range=['#2ca02c', '#d62728', '#1f77b4'])),
-        tooltip=["Label", "kWh"]
+    bar_chart = alt.Chart(milestone_data).mark_bar(size=60).encode(
+        x=alt.X('Day:N', title='Milestone Type'),
+        y=alt.Y('kWh:Q', title='Consumption (kWh)'),
+        color=alt.Color('Day:N', scale=alt.Scale(domain=['Lowest', 'Highest', 'Average'],
+                                                 range=['#2ca02c', '#d62728', '#1f77b4'])),
+        tooltip=['Day', 'kWh']
     ).properties(
-        width=400,
+        width=500,
         height=400,
-        title="🔄 Distribution of Milestone Days"
+        title="📊 Milestone Day Comparison"
     )
 
-    st.altair_chart(pie_chart, use_container_width=True)
+    st.altair_chart(bar_chart, use_container_width=True)
+
+    # --- Additional Insight 1: Streak Analysis ---
+    from itertools import groupby
+
+    daily_kwh['above_avg'] = daily_kwh['consumption_kwh'] > average_day
+    daily_kwh['below_avg'] = daily_kwh['consumption_kwh'] < average_day
+
+    def get_streaks(series, condition=True):
+        return max((sum(1 for _ in group) for key, group in groupby(series) if key == condition), default=0)
+
+    low_streak = get_streaks(daily_kwh['below_avg'])
+    high_streak = get_streaks(daily_kwh['above_avg'])
+
+    col4, col5 = st.columns(2)
+    col4.metric("💚 Longest Efficient Streak", f"{low_streak} days")
+    col5.metric("💢 Longest High Usage Streak", f"{high_streak} days")
+
+    # --- Additional Insight 2: Weekday vs Weekend Comparison ---
+    daily_kwh['weekday'] = pd.to_datetime(daily_kwh['date']).dt.dayofweek
+    daily_kwh['is_weekend'] = daily_kwh['weekday'] >= 5
+
+    weekend_avg = daily_kwh[daily_kwh['is_weekend']]['consumption_kwh'].mean()
+    weekday_avg = daily_kwh[~daily_kwh['is_weekend']]['consumption_kwh'].mean()
+
+    st.markdown("### 🗓️ Weekday vs Weekend Usage")
+    st.write(f"**Weekday Avg:** {weekday_avg:.2f} kWh  &nbsp;|&nbsp;  **Weekend Avg:** {weekend_avg:.2f} kWh")
+
+    # --- Additional Insight 3: Most Volatile Day ---
+    daily_kwh['pct_change'] = daily_kwh['consumption_kwh'].pct_change() * 100
+    max_spike = daily_kwh.loc[daily_kwh['pct_change'].abs().idxmax()]
+    st.metric("⚡ Most Volatile Day", f"{max_spike['consumption_kwh']:.2f} kWh", f"{max_spike['pct_change']:+.1f}%")
+
+    # --- All Daily Records ---
     with st.expander("📋 View All Daily Records"):
         st.dataframe(daily_kwh.sort_values(by='consumption_kwh'), use_container_width=True)
 
+    # --- Histogram with Color-Coded Ranges ---
+    st.markdown("### 📈 Daily Consumption Distribution")
 
+    average_day = daily_kwh['consumption_kwh'].mean()
 
+    # Define consumption ranges
+    def label_range(kwh):
+        if kwh < average_day * 0.9:
+            return "Below Avg"
+        elif kwh > average_day * 1.1:
+            return "Above Avg"
+        else:
+            return "Around Avg"
+
+    daily_kwh['range_label'] = daily_kwh['consumption_kwh'].apply(label_range)
+
+    # Build histogram with colored bins
+    hist = alt.Chart(daily_kwh).mark_bar().encode(
+        alt.X("consumption_kwh", bin=alt.Bin(maxbins=30), title="Daily Consumption (kWh)"),
+        y=alt.Y("count()", title="Number of Days"),
+        color=alt.Color("range_label:N", 
+                        title="Range",
+                        scale=alt.Scale(domain=["Below Avg", "Around Avg", "Above Avg"],
+                                        range=["#1f77b4", "#2ca02c", "#d62728"])),
+        tooltip=[
+            alt.Tooltip("count()", title="Days"),
+            alt.Tooltip("range_label:N", title="Range")
+        ]
+    ).properties(
+        width=500,
+        height=300,
+        title="🔍 Distribution of Daily Usage (Colored by Range)"
+    )
+
+    # Optional: add vertical average line
+    average_rule = alt.Chart(pd.DataFrame({'avg': [average_day]})).mark_rule(color='black', strokeDash=[4, 4]).encode(
+        x='avg:Q'
+    )
+
+    st.altair_chart(hist + average_rule, use_container_width=True)
 
 with tab9:
     st.markdown("## 🌍 Carbon Footprint Estimator")
     st.markdown("See how your electricity use translates into environmental impact.")
 
-    # Choose conversion factor
+    # User-defined emission factor
     st.info("Default emission factor: **0.475 kg CO₂ / kWh** (global avg).")
     emission_factor = st.number_input(
         "Set emission factor (kg CO₂ / kWh)", min_value=0.0, value=0.475
     )
 
+    # Calculate emissions
     df['date'] = df['time'].dt.date
     daily_emission = df.groupby('date')['consumption_kwh'].sum().reset_index()
     daily_emission['kg_co2'] = daily_emission['consumption_kwh'] * emission_factor
+    total_emission = daily_emission['kg_co2'].sum()
+    st.success(f"🧮 Estimated total CO₂ emissions: **{total_emission:.2f} kg**")
 
-    # Chart
-    carbon_chart = alt.Chart(daily_emission).mark_line(point=True).encode(
+    # Educational: 5 Impacts
+    with st.expander("🧠 Learn: 5 Major Impacts of CO₂ Emissions"):
+        st.markdown("""
+        1. 🌡️ **Global Warming** – CO₂ traps heat, causing rising temperatures.  
+        2. 🌊 **Rising Sea Levels** – Melts glaciers, floods coasts.  
+        3. 🏞️ **Deforestation Pressure** – Trees absorb CO₂. More emissions = fewer forests.  
+        4. 🐝 **Biodiversity Loss** – Warmer climate disrupts habitats.  
+        5. 💨 **Air Pollution Side Effects** – Indirect contributors to smog and health issues.
+        """)
+
+    # Area chart of CO₂ emissions
+    carbon_chart = alt.Chart(daily_emission).mark_area(
+        line={'color': '#1f77b4'}, color=alt.Gradient(
+            gradient='linear',
+            stops=[alt.GradientStop(color='#a6cee3', offset=0), alt.GradientStop(color='#1f77b4', offset=1)],
+            x1=1, x2=1, y1=1, y2=0
+        )
+    ).encode(
         x=alt.X('date:T', title='Date'),
         y=alt.Y('kg_co2:Q', title='Estimated CO₂ (kg)'),
         tooltip=['date:T', 'kg_co2:Q']
     ).properties(
-        title='Estimated Daily Carbon Emissions',
+        title='📈 Daily Carbon Emissions Trend',
         width='container',
         height=300
     )
-
     st.altair_chart(carbon_chart, use_container_width=True)
 
-    # Totals
-    total_emission = daily_emission['kg_co2'].sum()
-    st.success(f"🧮 Estimated total CO₂ emissions: **{total_emission:.2f} kg**")
+    # Best/Worst days
+    best_day = daily_emission.loc[daily_emission['kg_co2'].idxmin()]
+    worst_day = daily_emission.loc[daily_emission['kg_co2'].idxmax()]
+    col1, col2 = st.columns(2)
+    col1.metric("💚 Lowest CO₂ Day", f"{best_day['kg_co2']:.2f} kg", str(best_day['date']))
+    col2.metric("💢 Highest CO₂ Day", f"{worst_day['kg_co2']:.2f} kg", str(worst_day['date']))
 
+    # Monthly tree prompt + visuals
+    from datetime import datetime
+    last_month = datetime.now().month - 1 or 12
+    monthly_emission = daily_emission[
+        pd.to_datetime(daily_emission['date']).dt.month == last_month
+    ]['kg_co2'].sum()
+    trees_killed = int(monthly_emission / 21)
+
+    from PIL import Image
+    def load_resized_gif(path, max_width=700):
+        try:
+            gif = Image.open(path)
+            ratio = max_width / gif.width
+            new_size = (int(gif.width * ratio), int(gif.height * ratio))
+            gif = gif.resize(new_size, Image.Resampling.LANCZOS)
+            return gif
+        except Exception as e:
+            st.warning(f"Error loading or resizing GIF: {e}")
+            return None
+
+    gif_path = "images/carbon_impact_drama.gif"
+    resized_gif = load_resized_gif(gif_path)
+
+    show_gif = st.checkbox("🎞️ Show Dramatic CO₂ Impact GIF", value=True)
+
+    if show_gif:
+        col_left, col_right = st.columns([2, 1.5])
+        st.markdown("## 🪵 Uh-oh... Tree Trouble?")
+        st.markdown(f"Last month, your electricity usage may have cost us **🌳 {trees_killed} trees** worth of CO₂ absorption!")
+        st.markdown("#### 😬 Time to give back to the planet?")
+
+        with col_left:
+            
+            if gif_path:
+                st.image(gif_path, caption="Every kWh adds up... 🌍💔")
+
+        with col_right:
+            st.markdown("### 📘 Quick Tips")
+            # st.image("/mnt/data/80f8214c-3957-4c19-b200-b71fe86df0cf.png", caption="Small habits, big impact", use_container_width=True)
+            st.markdown("""
+            **🌱 Save Energy By:**
+            - Unplug idle chargers  
+            - Use LED lights  
+            - Dry clothes naturally  
+            - Turn off standby devices  
+            - Set fridge temp smartly
+            """)
+
+    # Equivalent real-world breakdown
+    with st.expander("🧾 What Else Does This Amount of CO₂ Equal?"):
+        st.markdown(f"""
+        - 🚗 **{monthly_emission / 0.404:.0f} miles** driven by a gas car  
+        - ✈️ **{monthly_emission / 90:.1f} short-haul flights** (avg 90kg CO₂ per flight)  
+        - 💡 **{monthly_emission / 0.92:.0f} hours** of LED lighting (avg 0.92 kg CO₂ / 1000 hrs)  
+        - 🥩 **{monthly_emission / 27:.0f} steaks** worth of emissions  
+        - 🧺 **{monthly_emission / 2.1:.0f} laundry loads** in a dryer
+        """)
+
+    # Data table
     with st.expander("📋 View Carbon Data"):
         st.dataframe(daily_emission, use_container_width=True)
-# with tab10:
-#     st.markdown("## 🏁 Power Consumption Challenge")
-#     st.markdown("See how you did this week compared to last week. Let's reduce energy step by step!")
 
-#     # Prepare weekly data
-#     df['week'] = df['time'].dt.to_period('W').apply(lambda r: r.start_time)
-#     weekly_kwh = df.groupby('week')['consumption_kwh'].sum().reset_index()
-
-#     if len(weekly_kwh) < 2:
-#         st.warning("Not enough data for comparison. Need at least two weeks.")
-#     else:
-#         # Get last two full weeks
-#         last_two = weekly_kwh.tail(2)
-#         this_week = last_two.iloc[1]
-#         last_week = last_two.iloc[0]
-
-#         change = this_week['consumption_kwh'] - last_week['consumption_kwh']
-#         percent_change = (change / last_week['consumption_kwh']) * 100
-
-#         # Emoji feedback
-#         if change < 0:
-#             feedback = f"🎉 Great job! You reduced your energy use by **{abs(percent_change):.2f}%**."
-#         elif change > 0:
-#             feedback = f"⚡️ You used **{percent_change:.2f}%** more energy this week. Let's aim lower next week!"
-#         else:
-#             feedback = "🔄 Same usage as last week. Try to improve next week!"
-
-#         # Metrics
-#         col1, col2 = st.columns(2)
-#         col1.metric("📅 Last Week", f"{last_week['consumption_kwh']:.2f} kWh")
-#         col2.metric("📅 This Week", f"{this_week['consumption_kwh']:.2f} kWh", f"{percent_change:+.2f}%")
-
-#         # Bar Chart Comparison
-#         fig, ax = plt.subplots()
-#         ax.bar(['Last Week', 'This Week'], last_two['consumption_kwh'], color=['#1f77b4', '#2ca02c'] if change <= 0 else ['#1f77b4', '#d62728'])
-#         ax.set_ylabel("Energy (kWh)")
-#         ax.set_title("Weekly Energy Usage Comparison")
-#         st.pyplot(fig)
-
-#         # Encouraging Feedback
-#         st.success(feedback)
-#             # 🏁 User Goal Tracking
-#         st.markdown("---")
-#         st.markdown("### 🎯 Set Your Weekly Energy Goal")
-
-#         # Let user set a target (pre-filled with last week's value for context)
-#         default_goal = round(last_week['consumption_kwh'], 2)
-#         goal_kwh = st.number_input(
-#             "Enter your energy goal for this week (kWh):",
-#             min_value=0.0,
-#             value=default_goal,
-#             step=0.1
-#         )
-
-#         # Check how current week compares to goal
-#         goal_diff = this_week['consumption_kwh'] - goal_kwh
-#         goal_percent = (goal_diff / goal_kwh) * 100
-
-#         if goal_diff < 0:
-#             st.success(f"🏅 You're **{abs(goal_percent):.2f}% below** your goal. Keep it up!")
-#         elif goal_diff > 0:
-#             st.warning(f"⚠️ You're **{goal_percent:.2f}% over** your goal. Adjust your usage next week!")
-#         else:
-#             st.info("⏸️ You've exactly met your goal this week!")
-
-#         # Optional visualization
-#         st.markdown("### 🔄 Goal Comparison")
-#         goal_df = pd.DataFrame({
-#             'Category': ['Goal', 'This Week'],
-#             'kWh': [goal_kwh, this_week['consumption_kwh']]
-#         })
-#         goal_df['Color'] = ['#8c564b', '#2ca02c' if goal_diff <= 0 else '#d62728']
-
-#         bar = alt.Chart(goal_df).mark_bar().encode(
-#             x=alt.X('Category:N', title=None),
-#             y=alt.Y('kWh:Q', title='Energy (kWh)'),
-#             color=alt.Color('Color:N', scale=None),
-#             tooltip=['Category', 'kWh']
-#         ).properties(
-#             width='container',
-#             height=300,
-#             title='This Week vs. Your Goal'
-#         )
-
-#         st.altair_chart(bar, use_container_width=True)
 
 with tab10:
     st.markdown("## 🏁 Power Consumption Challenge")
@@ -668,7 +736,7 @@ with tab11:
     # Define spike as value greater than mean + 2 * std
     hourly_df['is_spike'] = (
         hourly_df['consumption_kwh'] >
-        (hourly_df['rolling_mean'] + 2 * hourly_df['rolling_std'])
+        (hourly_df['rolling_mean'] + 4 * hourly_df['rolling_std'])
     )
 
     # Extract spike events
@@ -723,4 +791,95 @@ with tab11:
 
     st.altair_chart(heatmap, use_container_width=True)
 
+import numpy as np
 
+# Add simulated weather data if missing
+if 'temperature_c' not in df.columns:
+    df['date'] = df['time'].dt.date
+    unique_dates = df['date'].unique()
+
+    # Generate fake temperatures (seasonal trend + noise)
+    days = np.arange(len(unique_dates))
+    base_temp = 20 + 10 * np.sin(2 * np.pi * days / 365)
+    noise = np.random.normal(0, 3, len(unique_dates))
+    simulated_temps = base_temp + noise
+
+    # Create DataFrame
+    temp_df = pd.DataFrame({
+        'date': unique_dates,
+        'temperature_c': simulated_temps
+    })
+
+    # Merge with main df
+    df = df.merge(temp_df, on='date', how='left')
+with tab12:
+    st.markdown("## ⛅ Weather–Energy Overlay")
+    st.markdown("Compare your energy spikes with temperature data to understand outside influences.")
+
+    # Prepare daily summary
+    daily_df = df.groupby('date').agg({
+        'consumption_kwh': 'sum',
+        'temperature_c': 'mean'
+    }).reset_index()
+
+    # Base chart
+    base = alt.Chart(daily_df).encode(x='date:T')
+
+    # 🔵 Energy usage line
+    line_energy = base.mark_line(color='#1f77b4').encode(
+        y=alt.Y('consumption_kwh:Q', axis=alt.Axis(title='Energy (kWh)')),
+        tooltip=['date:T', 'consumption_kwh']
+    )
+
+    # 🔴 Temperature line
+    line_temp = base.mark_line(color='#e377c2').encode(
+        y=alt.Y('temperature_c:Q', axis=alt.Axis(title='Temperature (°C)')),
+        tooltip=['date:T', 'temperature_c']
+    )
+
+    # Overlay both lines
+    chart = alt.layer(line_energy, line_temp).resolve_scale(
+        y='independent'
+    ).properties(
+        title="📊 Temperature vs Energy Consumption",
+        width='container',
+        height=350
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+    # Optional table
+    with st.expander("📋 View Daily Comparison Table"):
+        st.dataframe(daily_df, use_container_width=True)
+    # --- Insight 1: Correlation between temperature and energy usage
+    correlation = daily_df['temperature_c'].corr(daily_df['consumption_kwh'])
+    st.markdown(f"### 📊 Temperature–Energy Correlation")
+    st.write(f"Your energy usage and temperature have a correlation of **{correlation:.2f}**.")
+    if correlation > 0.3:
+        st.info("You tend to use more energy on hotter days — likely due to cooling (AC).")
+    elif correlation < -0.3:
+        st.info("You tend to use more energy on colder days — likely due to heating.")
+    else:
+        st.info("No strong correlation — your usage is likely not weather-driven.")
+
+    # --- Insight 2: Comfort range detection
+    temp_bins = pd.cut(daily_df['temperature_c'], bins=[-10, 15, 22, 30, 45], labels=['Cold', 'Comfort', 'Warm', 'Hot'])
+    avg_by_temp_zone = daily_df.groupby(temp_bins)['consumption_kwh'].mean().reset_index()
+    lowest_zone = avg_by_temp_zone.loc[avg_by_temp_zone['consumption_kwh'].idxmin()]
+    st.markdown("### 🧘 Optimal Comfort Zone")
+    st.write(f"You use the least energy when it's **{lowest_zone['temperature_c']}** — this is your most efficient weather range.")
+
+    # --- Insight 3: Impact of Extreme Weather
+    hot_days = daily_df[daily_df['temperature_c'] > 30]
+    cold_days = daily_df[daily_df['temperature_c'] < 5]
+
+    hot_avg = hot_days['consumption_kwh'].mean() if not hot_days.empty else None
+    cold_avg = cold_days['consumption_kwh'].mean() if not cold_days.empty else None
+
+    st.markdown("### 🌡️ Extreme Weather Energy Impact")
+    if hot_avg:
+        st.write(f"🔥 On hot days (>30°C), your average energy use is **{hot_avg:.2f} kWh**.")
+    if cold_avg:
+        st.write(f"❄️ On cold days (<5°C), your average energy use is **{cold_avg:.2f} kWh**.")
+    if not hot_avg and not cold_avg:
+        st.info("You haven’t experienced extreme temperatures in your data.")
